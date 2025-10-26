@@ -16,15 +16,19 @@
 interface.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import textwrap
 from collections import Counter
-from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
 from platform import python_version
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
+
+from typing_extensions import NotRequired
 
 import beets
 from beets import autotag, config, importer, library, logging, plugins, ui, util
@@ -47,6 +51,14 @@ from beets.util import (
 from beets.util.units import human_bytes, human_seconds, human_seconds_short
 
 from . import _store_dict
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    import confuse
+
+    from beets.ui import ColorName
+
 
 VARIOUS_ARTISTS = "Various Artists"
 
@@ -297,6 +309,14 @@ def penalty_string(distance, limit=None):
         return ui.colorize("changed", penalty_string)
 
 
+class Line(TypedDict):
+    prefix: str
+    contents: str
+    suffix: str
+    width: NotRequired[int]
+
+
+@dataclass
 class ChangeRepresentation:
     """Keeps track of all information needed to generate a (colored) text
     representation of the changes that will be made if an album or singleton's
@@ -304,46 +324,46 @@ class ChangeRepresentation:
     TrackMatch object, accordingly.
     """
 
+    cur_artist: str
+    cur_name: str
+    match: autotag.hooks.Match
+
     @cached_property
     def changed_prefix(self) -> str:
         return ui.colorize("changed", "\u2260")
 
-    cur_artist = None
-    # cur_album set if album, cur_title set if singleton
-    cur_album = None
-    cur_title = None
-    match = None
-    indent_header = ""
-    indent_detail = ""
+    @cached_property
+    def _indentation_config(self) -> confuse.ConfigView:
+        return config["ui"]["import"]["indentation"]
 
-    def __init__(self):
-        # Read match header indentation width from config.
-        match_header_indent_width = config["ui"]["import"]["indentation"][
-            "match_header"
-        ].as_number()
-        self.indent_header = ui.indent(match_header_indent_width)
+    @cached_property
+    def indent_header(self) -> str:
+        return ui.indent(self._indentation_config["match_header"].as_number())
 
-        # Read match detail indentation width from config.
-        match_detail_indent_width = config["ui"]["import"]["indentation"][
-            "match_details"
-        ].as_number()
-        self.indent_detail = ui.indent(match_detail_indent_width)
+    @cached_property
+    def indent_detail(self) -> str:
+        return ui.indent(self._indentation_config["match_details"].as_number())
 
-        # Read match tracklist indentation width from config
-        match_tracklist_indent_width = config["ui"]["import"]["indentation"][
-            "match_tracklist"
-        ].as_number()
-        self.indent_tracklist = ui.indent(match_tracklist_indent_width)
-        self.layout = config["ui"]["import"]["layout"].as_choice(
-            {
-                "column": 0,
-                "newline": 1,
-            }
+    @cached_property
+    def indent_tracklist(self) -> str:
+        return ui.indent(
+            self._indentation_config["match_tracklist"].as_number()
+        )
+
+    @cached_property
+    def layout(self) -> int:
+        return config["ui"]["import"]["layout"].as_choice(
+            {"column": 0, "newline": 1}
         )
 
     def print_layout(
-        self, indent, left, right, separator=" -> ", max_width=None
-    ):
+        self,
+        indent: str,
+        left: Line,
+        right: Line,
+        separator: str = " -> ",
+        max_width: int | None = None,
+    ) -> None:
         if not max_width:
             # If no max_width provided, use terminal width
             max_width = ui.term_width()
@@ -352,7 +372,7 @@ class ChangeRepresentation:
         else:
             print_newline_layout(indent, left, right, separator, max_width)
 
-    def show_match_header(self):
+    def show_match_header(self) -> None:
         """Print out a 'header' identifying the suggested match (album name,
         artist name,...) and summarizing the changes that would be made should
         the user accept the match.
@@ -365,16 +385,7 @@ class ChangeRepresentation:
             f"{self.indent_header}Match ({dist_string(self.match.distance)}):"
         )
 
-        if isinstance(self.match.info, autotag.hooks.AlbumInfo):
-            # Matching an album - print that
-            artist_album_str = (
-                f"{self.match.info.artist} - {self.match.info.album}"
-            )
-        else:
-            # Matching a single track
-            artist_album_str = (
-                f"{self.match.info.artist} - {self.match.info.title}"
-            )
+        artist_album_str = f"{self.match.info.artist} - {self.match.info.name}"
         print_(
             self.indent_header
             + dist_colorize(artist_album_str, self.match.distance)
@@ -395,7 +406,7 @@ class ChangeRepresentation:
             url = ui.colorize("text_faint", f"{self.match.info.data_url}")
             print_(f"{self.indent_header}{url}")
 
-    def show_match_details(self):
+    def show_match_details(self) -> None:
         """Print out the details of the match, including changes in album name
         and artist name.
         """
@@ -404,6 +415,8 @@ class ChangeRepresentation:
         if artist_r == VARIOUS_ARTISTS:
             # Hide artists for VA releases.
             artist_l, artist_r = "", ""
+        left: Line
+        right: Line
         if artist_l != artist_r:
             artist_l, artist_r = ui.colordiff(artist_l, artist_r)
             left = {
@@ -417,39 +430,25 @@ class ChangeRepresentation:
         else:
             print_(f"{self.indent_detail}*", "Artist:", artist_r)
 
-        if self.cur_album:
+        if self.cur_name:
             # Album
-            album_l, album_r = self.cur_album or "", self.match.info.album
+            name_l, name_r = self.cur_name or "", self.match.info.name
             if (
-                self.cur_album != self.match.info.album
-                and self.match.info.album != VARIOUS_ARTISTS
+                self.cur_name != self.match.info.name
+                and self.match.info.name != VARIOUS_ARTISTS
             ):
-                album_l, album_r = ui.colordiff(album_l, album_r)
+                name_l, name_r = ui.colordiff(name_l, name_r)
                 left = {
-                    "prefix": f"{self.changed_prefix} Album: ",
-                    "contents": album_l,
+                    "prefix": f"{self.changed_prefix} {self.match.type}: ",
+                    "contents": name_l,
                     "suffix": "",
                 }
-                right = {"prefix": "", "contents": album_r, "suffix": ""}
+                right = {"prefix": "", "contents": name_r, "suffix": ""}
                 self.print_layout(self.indent_detail, left, right)
             else:
-                print_(f"{self.indent_detail}*", "Album:", album_r)
-        elif self.cur_title:
-            # Title - for singletons
-            title_l, title_r = self.cur_title or "", self.match.info.title
-            if self.cur_title != self.match.info.title:
-                title_l, title_r = ui.colordiff(title_l, title_r)
-                left = {
-                    "prefix": f"{self.changed_prefix} Title: ",
-                    "contents": title_l,
-                    "suffix": "",
-                }
-                right = {"prefix": "", "contents": title_r, "suffix": ""}
-                self.print_layout(self.indent_detail, left, right)
-            else:
-                print_(f"{self.indent_detail}*", "Title:", title_r)
+                print_(f"{self.indent_detail}*", "Album:", name_r)
 
-    def make_medium_info_line(self, track_info):
+    def make_medium_info_line(self, track_info: hooks.TrackInfo) -> str:
         """Construct a line with the current medium's info."""
         track_media = track_info.get("media", "Media")
         # Build output string.
@@ -464,7 +463,7 @@ class ChangeRepresentation:
         else:
             return ""
 
-    def format_index(self, track_info):
+    def format_index(self, track_info: hooks.TrackInfo | library.Item) -> str:
         """Return a string representing the track index of the given
         TrackInfo or Item object.
         """
@@ -485,12 +484,15 @@ class ChangeRepresentation:
         else:
             return str(index)
 
-    def make_track_numbers(self, item, track_info):
+    def make_track_numbers(
+        self, item, track_info: hooks.TrackInfo
+    ) -> tuple[str, str, bool]:
         """Format colored track indices."""
         cur_track = self.format_index(item)
         new_track = self.format_index(track_info)
         changed = False
         # Choose color based on change.
+        highlight_color: ColorName
         if cur_track != new_track:
             changed = True
             if item.track in (track_info.index, track_info.medium_index):
@@ -505,9 +507,11 @@ class ChangeRepresentation:
         return lhs_track, rhs_track, changed
 
     @staticmethod
-    def make_track_titles(item, track_info):
+    def make_track_titles(
+        item: library.Item, track_info: hooks.TrackInfo
+    ) -> tuple[str, str, bool]:
         """Format colored track titles."""
-        new_title = track_info.title
+        new_title = track_info.name
         if not item.title.strip():
             # If there's no title, we use the filename. Don't colordiff.
             cur_title = displayable_path(os.path.basename(item.path))
@@ -519,9 +523,12 @@ class ChangeRepresentation:
             return cur_col, new_col, cur_title != new_title
 
     @staticmethod
-    def make_track_lengths(item, track_info):
+    def make_track_lengths(
+        item: library.Item, track_info: hooks.TrackInfo
+    ) -> tuple[str, str, bool]:
         """Format colored track lengths."""
         changed = False
+        highlight_color: ColorName
         if (
             item.length
             and track_info.length
@@ -545,7 +552,9 @@ class ChangeRepresentation:
 
         return lhs_length, rhs_length, changed
 
-    def make_line(self, item, track_info):
+    def make_line(
+        self, item: library.Item, track_info: hooks.TrackInfo
+    ) -> tuple[Line, Line]:
         """Extract changes from item -> new TrackInfo object, and colorize
         appropriately. Returns (lhs, rhs) for column printing.
         """
@@ -569,12 +578,12 @@ class ChangeRepresentation:
         # the case, thus the 'info' dictionary is unneeded.
         # penalties = penalty_string(self.match.distance.tracks[track_info])
 
-        lhs = {
+        lhs: Line = {
             "prefix": f"{self.changed_prefix if changed else '*'} {lhs_track} ",
             "contents": lhs_title,
             "suffix": f" {lhs_length}",
         }
-        rhs = {"prefix": "", "contents": "", "suffix": ""}
+        rhs: Line = {"prefix": "", "contents": "", "suffix": ""}
         if not changed:
             # Only return the left side, as nothing changed.
             return (lhs, rhs)
@@ -587,7 +596,7 @@ class ChangeRepresentation:
             }
             return (lhs, rhs)
 
-    def print_tracklist(self, lines):
+    def print_tracklist(self, lines: list[tuple[Line, Line]]) -> None:
         """Calculates column widths for tracks stored as line tuples:
         (left, right). Then prints each line of tracklist.
         """
@@ -647,23 +656,19 @@ class ChangeRepresentation:
 class AlbumChange(ChangeRepresentation):
     """Album change representation, setting cur_album"""
 
-    def __init__(self, cur_artist, cur_album, match):
-        super().__init__()
-        self.cur_artist = cur_artist
-        self.cur_album = cur_album
-        self.match = match
+    match: autotag.hooks.AlbumMatch
 
-    def show_match_tracks(self):
+    def show_match_tracks(self) -> None:
         """Print out the tracks of the match, summarizing changes the match
         suggests for them.
         """
         # Tracks.
         # match is an AlbumMatch NamedTuple, mapping is a dict
         # Sort the pairs by the track_info index (at index 1 of the NamedTuple)
-        pairs = sorted(self.match.mapping, key=lambda pair: pair[1].index)
+        pairs = sorted(self.match.mapping, key=lambda pair: pair[1]["index"])
         # Build up LHS and RHS for track difference display. The `lines` list
         # contains `(left, right)` tuples.
-        lines = []
+        lines: list[tuple[Line, Line]] = []
         medium = disctitle = None
         for item, track_info in pairs:
             # If the track is the first on a new medium, show medium
@@ -712,21 +717,17 @@ class AlbumChange(ChangeRepresentation):
 class TrackChange(ChangeRepresentation):
     """Track change representation, comparing item with match."""
 
-    def __init__(self, cur_artist, cur_title, match):
-        super().__init__()
-        self.cur_artist = cur_artist
-        self.cur_title = cur_title
-        self.match = match
+    match: autotag.hooks.TrackMatch
 
 
-def show_change(cur_artist, cur_album, match):
+def show_change(
+    cur_artist: str, cur_album: str, match: hooks.AlbumMatch
+) -> None:
     """Print out a representation of the changes that will be made if an
     album's tags are changed according to `match`, which must be an AlbumMatch
     object.
     """
-    change = AlbumChange(
-        cur_artist=cur_artist, cur_album=cur_album, match=match
-    )
+    change = AlbumChange(cur_artist, cur_album, match)
 
     # Print the match header.
     change.show_match_header()
@@ -738,13 +739,11 @@ def show_change(cur_artist, cur_album, match):
     change.show_match_tracks()
 
 
-def show_item_change(item, match):
+def show_item_change(item: library.Item, match: hooks.TrackMatch) -> None:
     """Print out the change that would occur by tagging `item` with the
     metadata from `match`, a TrackMatch object.
     """
-    change = TrackChange(
-        cur_artist=item.artist, cur_title=item.title, match=match
-    )
+    change = TrackChange(item.artist, item.title, match)
     # Print the match header.
     change.show_match_header()
     # Print the match details.
@@ -915,10 +914,7 @@ def choose_candidate(
                 index = dist_colorize(index0, match.distance)
                 dist = f"({(1 - match.distance) * 100:.1f}%)"
                 distance = dist_colorize(dist, match.distance)
-                metadata = (
-                    f"{match.info.artist} -"
-                    f" {match.info.title if singleton else match.info.album}"
-                )
+                metadata = f"{match.info.artist} - {match.info.name}"
                 if i == 0:
                     metadata = dist_colorize(metadata, match.distance)
                 else:
