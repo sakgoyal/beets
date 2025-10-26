@@ -219,9 +219,13 @@ class TrackInfo(Info):
 class AlbumMatch(NamedTuple):
     distance: Distance
     info: AlbumInfo
-    mapping: dict[Item, TrackInfo]
+    mapping: list[tuple[Item, TrackInfo]]
     extra_items: list[Item]
     extra_tracks: list[TrackInfo]
+
+    @property
+    def items(self) -> list[Item]:
+        return [i for i, _ in self.mapping]
 
 
 class TrackMatch(NamedTuple):

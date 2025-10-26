@@ -1155,7 +1155,7 @@ class ShowChangeTest(IOMixin, unittest.TestCase):
         """Return an unicode string representing the changes"""
         items = items or self.items
         info = info or self.info
-        mapping = dict(zip(items, info.tracks))
+        mapping = list(zip(items, info.tracks))
         config["ui"]["color"] = color
         config["import"]["detail"] = True
         change_dist = distance(items, info, mapping)
