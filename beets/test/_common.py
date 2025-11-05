@@ -19,12 +19,10 @@ import sys
 import unittest
 from contextlib import contextmanager
 
-import beets
-import beets.library
-
 # Make sure the development versions of the plugins are used
 import beetsplug
 from beets import importer, logging, util
+from beets.library import Item
 from beets.ui import commands
 from beets.util import syspath
 
@@ -99,7 +97,7 @@ def item(lib=None, **kwargs):
         album_id=None,
         mtime=12345,
     )
-    i = beets.library.Item(**{**defaults, **kwargs})
+    i = Item(**{**defaults, **kwargs})
     if lib:
         lib.add(i)
     return i

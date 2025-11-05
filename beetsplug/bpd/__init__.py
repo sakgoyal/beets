@@ -28,11 +28,10 @@ import traceback
 from string import Template
 from typing import TYPE_CHECKING
 
-import beets
-import beets.ui
 from beets import dbcore, logging
 from beets.library import Item
 from beets.plugins import BeetsPlugin
+from beets.ui import Subcommand, UserError
 from beets.util import as_string, bluelet
 from beetsplug._utils import vfs
 
@@ -283,7 +282,7 @@ class BaseServer:
         if not self.ctrl_sock:
             self.ctrl_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.ctrl_sock.connect((self.ctrl_host, self.ctrl_port))
-        self.ctrl_sock.sendall((f"{message}\n").encode("utf-8"))
+        self.ctrl_sock.sendall((f"{message}\n").encode())
 
     def _send_event(self, event):
         """Notify subscribed connections of an event."""
@@ -1604,7 +1603,7 @@ class BPDPlugin(BeetsPlugin):
         server.run()
 
     def commands(self):
-        cmd = beets.ui.Subcommand(
+        cmd = Subcommand(
             "bpd", help="run an MPD-compatible music player server"
         )
 
@@ -1617,7 +1616,7 @@ class BPDPlugin(BeetsPlugin):
             else:
                 ctrl_port = self.config["control_port"].get(int)
             if args:
-                raise beets.ui.UserError("too many arguments")
+                raise UserError("too many arguments")
             password = self.config["password"].as_str()
             volume = self.config["volume"].get(int)
             self.start_bpd(
